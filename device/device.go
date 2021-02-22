@@ -6,7 +6,6 @@
 package device
 
 import (
-	"runtime"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -279,11 +278,12 @@ func (device *Device) SetPrivateKey(sk NoisePrivateKey) error {
 	return nil
 }
 
-func NewDevice(tunDevice tun.Device, logger *Logger) *Device {
+func NewDevice(tunDevice tun.Device, bind conn.Bind, logger *Logger) *Device {
 	device := new(Device)
 	device.state.state = uint32(deviceStateDown)
 	device.closed = make(chan struct{})
 	device.log = logger
+	device.net.bind = bind
 	device.tun.device = tunDevice
 	mtu, err := device.tun.device.MTU()
 	if err != nil {
@@ -302,14 +302,9 @@ func NewDevice(tunDevice tun.Device, logger *Logger) *Device {
 	device.queue.encryption = newOutboundQueue()
 	device.queue.decryption = newInboundQueue()
 
-	// prepare net
-
-	device.net.port = 0
-	device.net.bind = nil
-
 	// start workers
 
-	cpus := runtime.NumCPU()
+	cpus := 1
 	device.state.stopping.Wait()
 	device.queue.encryption.wg.Add(cpus) // One for each RoutineHandshake
 	for i := 0; i < cpus; i++ {
@@ -414,7 +409,6 @@ func unsafeCloseBind(device *Device) error {
 	}
 	if netc.bind != nil {
 		err = netc.bind.Close()
-		netc.bind = nil
 	}
 	netc.stopping.Wait()
 	return err
@@ -474,16 +468,14 @@ func (device *Device) BindUpdate() error {
 	// bind to new port
 	var err error
 	netc := &device.net
-	netc.bind, netc.port, err = conn.CreateBind(netc.port)
+	netc.port, err = netc.bind.Open(netc.port)
 	if err != nil {
-		netc.bind = nil
 		netc.port = 0
 		return err
 	}
 	netc.netlinkCancel, err = device.startRouteListener(netc.bind)
 	if err != nil {
 		netc.bind.Close()
-		netc.bind = nil
 		netc.port = 0
 		return err
 	}
